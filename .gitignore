@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.so
+.Python
+
+# Virtual environment
+venv/
+env/
+.env/
+ENV/
+
+# IDE / OS specific
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Output files
+outputs/
+*.log
+*.ckpt
+*.checkpoint
+
+# HuggingFace cache (if you ever set it locally in project, though default is ~/.cache)
+.cache/
+hf_cache/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
