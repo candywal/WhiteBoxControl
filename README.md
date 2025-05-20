@@ -7,6 +7,7 @@ Remaining TODO
 
 
 ## File Structure of this Project:
+```
 WhiteBoxControl/
 ├── TrainProbe.py               # Main script for training probes
 ├── EvalProbe.py                # Main script for evaluating probes
@@ -42,3 +43,4 @@ WhiteBoxControl/
 ├── requirements.txt              # Python dependencies
 ├── README.md                     # Project description, setup, usage instructions
 └── .gitignore                    # Files and directories to ignore in Git
+```
