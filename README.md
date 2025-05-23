@@ -1,7 +1,14 @@
-# 🔍 WhiteBoxControl
+# 🔍 WhiteBoxControl: Evaluating Probes in a Research Sabotage Setting
 
-> **Advanced Neural Probe Training and Evaluation Framework**  
-> Train and evaluate interpretability probes on transformer model activations to understand model behavior and detect potentially unsafe outputs.
+
+The main goals we are trying to achieve
+- Introduce a risk assessment methodology for white box monitors.
+- Introduce benchmark data sets for iterating on techniques.
+
+
+## *Abstract* 
+LLM agents are increasingly entrusted with high-stakes affordances within software companies, creating a security risk. Just as organizations defend against human insider threats, they should prepare defenses against LLM agent adversaries. Previous work introduced ‘control evaluations’ as a methodology to red-team defenses against LLM adversaries; however, these evaluations only addressed strategies that monitored agents’ outputs and treated the LLMs themselves as black boxes. ‘White box’ methods, i.e. monitoring a model’s activations to see if it’s engaging in dangerous reasoning, could also be effective. We introduce a suite of evaluations to assess how white box monitoring methods such as linear probing catch LLM attacks in a software engineering setting. Our evaluations suggest that state-of-the art probes are fragile, and often generalize poorly between attack types. While probes offer some risk reduction, we couldn’t make them reliable enough for high assurance. We hope our evaluation methodology and datasets help improve white box monitors so they are a reliable defense against AI agent security threats. 
+
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
@@ -16,7 +23,6 @@
 - 📊 **Comprehensive Evaluation**: Detailed metrics, plots, and analysis
 - 🔧 **Flexible Configuration**: Support for various models and hyperparameters
 - 📈 **Multi-GPU Support**: Efficient parallel training and evaluation
-- 🎨 **Rich Visualizations**: ROC curves, precision-recall plots, and distributions
 
 ---
 
