@@ -213,26 +213,6 @@ After evaluation, you'll get:
 
 ---
 
-## 🔬 **Advanced Features**
-
-### **Hyperparameter Optimization**
-
-Based on our experiments, here are the optimal configurations:
-
-#### **🏆 Best Attention Probe Settings**
-- **Learning Rate**: 0.0022  
-- **Epochs**: 14
-- **Normalization**: Optional (test both)
-- **Initialization Scale**: 1.5
-- **Layer**: 32 (for large models)
-
-#### **🚀 Performance Benchmarks**
-| Probe Type | Accuracy | AUC | TPR@FPR=0.01 | Training Time |
-|------------|----------|-----|---------------|---------------|
-| Logistic | **100.0%** | **1.000** | **100.0%** | ~2 min |
-| Mean Diff | **100.0%** | **1.000** | **100.0%** | ~30 sec |
-| Attention | 73.5% | 0.822 | 5.0% | ~5 min |
-
 ### **Multi-GPU Training**
 
 ```bash
@@ -262,7 +242,7 @@ python EvalProbe.py \
 
 ## 🛠️ **Utilities**
 
-WhiteBoxControl includes powerful utility functions:
+WhiteBoxControl includes utility functions:
 
 ```python
 import Utils
@@ -287,73 +267,7 @@ Utils.combine_datasets(
 Utils.print_system_info()
 ```
 
----
 
-## 📊 **Experimental Results**
-
-### **Attention Probe Hyperparameter Study**
-
-We conducted systematic experiments to find optimal attention probe configurations:
-
-| Configuration | LR | Epochs | Normalization | AUC | Accuracy |
-|---------------|----|---------| ------------- |-----|----------|
-| **🏆 Best Overall** | 0.0022 | 14 | No | **0.8220** | 63.0% |
-| **🎯 Best Accuracy** | 0.002 | 15 | Yes | 0.8180 | **73.5%** |
-| **⚡ Fast & Good** | 0.0035 | 8 | Yes | 0.8020 | 58.5% |
-
-### **Key Insights**
-- **Sweet Spot**: Learning rates between 0.002-0.0035 work best
-- **Normalization**: Helps on average but not always necessary
-- **Training Duration**: 8-18 epochs sufficient, more isn't always better
-- **Layer Choice**: Layer 32 optimal for large models (70B+)
-
----
-
-## 🔧 **Troubleshooting**
-
-### **Common Issues**
-
-#### **❌ CUDA Out of Memory**
-```bash
-# Reduce batch size
-python TrainProbe.py --batch_size 1 [other args]
-
-# Use specific GPU
-python TrainProbe.py --gpu_id 0 [other args]
-
-# Clear cache
-python TrainProbe.py --clear_cache [other args]
-```
-
-#### **❌ Model Not Found**
-```bash
-# Check model path
-python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('your-model-name')"
-
-# Use local path
-python TrainProbe.py --model "/absolute/path/to/model" [other args]
-```
-
-#### **❌ Data Format Error**
-```bash
-# Validate your dataset
-python -c "import Utils; Utils.validate_dataset_format('your-data.json')"
-
-# Add trajectory indices if missing
-python -c "import Utils; Utils.add_trajectory_indices('your-data.json')"
-```
-
----
-
-## 🤝 **Contributing**
-
-We welcome contributions! Please:
-
-1. 🍴 Fork the repository
-2. 🌿 Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. 💚 Commit your changes (`git commit -m 'Add amazing feature'`)
-4. 📤 Push to the branch (`git push origin feature/amazing-feature`)
-5. 🔄 Open a Pull Request
 
 ### **Development Setup**
 
@@ -377,37 +291,3 @@ python -m pytest tests/
 black . && flake8 .
 ```
 
----
-
-## 📄 **License**
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 **Acknowledgments**
-
-- **🤗 Hugging Face** for transformer models and tokenizers
-- **🔥 PyTorch** for deep learning framework  
-- **📊 scikit-learn** for evaluation metrics
-- **🎨 matplotlib** for visualization capabilities
-- **⚡ Accelerate** for multi-GPU support
-
----
-
-## 📞 **Support**
-
-- 📧 **Email**: your.email@domain.com
-- 💬 **Issues**: [GitHub Issues](https://github.com/yourusername/WhiteBoxControl/issues)
-- 📖 **Documentation**: [Wiki](https://github.com/yourusername/WhiteBoxControl/wiki)
-- 💡 **Discussions**: [GitHub Discussions](https://github.com/yourusername/WhiteBoxControl/discussions)
-
----
-
-<div align="center">
-
-**🌟 Star this repository if you find it useful! 🌟**
-
-Made with ❤️ for AI Safety and Interpretability
-
-</div>
