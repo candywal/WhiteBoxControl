@@ -32,3 +32,9 @@ hf_cache/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
+.venv/
+=*
+tmp*
+torchelastic*
+old_code*
+data*

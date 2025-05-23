@@ -1,120 +1,280 @@
-import argparse
+#!/usr/bin/env python3
+"""
+TrainProbe.py - Main script for training neural probes on model activations.
+
+This script provides a unified interface for training different types of probes:
+- Logistic Probe: Standard logistic regression probe
+- Attention Probe: Probe with learned attention mechanism
+- Mean Difference Probe: Non-parametric probe based on class mean differences
+
+Usage:
+    python TrainProbe.py --probe_type logistic --model /path/to/model --data /path/to/data.json
+    python TrainProbe.py --probe_type attention --model /path/to/model --data /path/to/data.json --lr 0.002
+    python TrainProbe.py --probe_type mean_diff --model /path/to/model --data /path/to/data.json
+"""
+
 import os
-import torch # Keep torch import for type hints and potential direct use
-from Utils import load_and_prepare_hf_datasets, save_json, get_device
-from probes import get_probe_class
+import sys
+import argparse
+import json
+import time
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+# Add probes directory to path
+sys.path.append(str(Path(__file__).parent / "probes"))
+
+from probes.logistic_probe import LogisticProbe
+from probes.attention_probe import LearnedAttentionProbe
+from probes.mean_diff_probe import MeanDiffProbe
+import torch
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Train neural probes on model activations",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Train logistic probe
+  python TrainProbe.py --probe_type logistic --model meta-llama/Llama-3.1-8B-Instruct --data data/train.json
+
+  # Train attention probe with custom hyperparameters
+  python TrainProbe.py --probe_type attention --model /path/to/model --data data/train.json \\
+                       --lr 0.002 --epochs 15 --use_normalization
+
+  # Train mean difference probe (no training required)
+  python TrainProbe.py --probe_type mean_diff --model /path/to/model --data data/train.json
+        """
+    )
+    
+    # Required arguments
+    parser.add_argument("--probe_type", type=str, required=True, 
+                       choices=["logistic", "attention", "mean_diff"],
+                       help="Type of probe to train")
+    parser.add_argument("--model", type=str, required=True,
+                       help="Model name or path (HuggingFace model or local path)")
+    parser.add_argument("--data", type=str, required=True,
+                       help="Path to training data (JSON file with trajectories)")
+    
+    # Optional arguments
+    parser.add_argument("--output_dir", type=str, default="outputs/trained_probes",
+                       help="Output directory for trained probe")
+    parser.add_argument("--layer", type=int, default=15,
+                       help="Transformer layer to extract activations from")
+    parser.add_argument("--gpu_id", type=int, default=None,
+                       help="Specific GPU to use (0-7), if None uses all available")
+    
+    # Training hyperparameters
+    parser.add_argument("--epochs", type=int, default=10,
+                       help="Number of training epochs")
+    parser.add_argument("--lr", type=float, default=None,
+                       help="Learning rate (if None, uses probe-specific defaults)")
+    parser.add_argument("--batch_size", type=int, default=1,
+                       help="Batch size for inference")
+    
+    # Attention probe specific arguments
+    parser.add_argument("--use_normalization", action="store_true",
+                       help="Use layer normalization (attention probe)")
+    parser.add_argument("--attention_scaling", action="store_true", default=True,
+                       help="Scale attention by sqrt(hidden_dim) (attention probe)")
+    parser.add_argument("--initialization_scale", type=float, default=2.0,
+                       help="Weight initialization scale (attention probe)")
+    
+    # Logistic probe specific arguments
+    parser.add_argument("--fit_method", type=str, default="adam", choices=["adam", "lbfgs"],
+                       help="Optimization method (logistic probe)")
+    parser.add_argument("--token_aggregation", type=str, default="mean", 
+                       choices=["mean", "soft_max", "last_only"],
+                       help="Token position aggregation strategy")
+    
+    # Other options
+    parser.add_argument("--clear_cache", action="store_true",
+                       help="Clear activation cache before training")
+    parser.add_argument("--save_config", action="store_true", default=True,
+                       help="Save training configuration")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Verbose output")
+    
+    return parser.parse_args()
+
+def setup_gpu(gpu_id: Optional[int]) -> None:
+    """Setup GPU configuration."""
+    if gpu_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        print(f"🔧 Using GPU {gpu_id}")
+    else:
+        print(f"🔧 Using all available GPUs")
+
+def validate_data_file(data_path: str) -> None:
+    """Validate that the data file exists and has correct format."""
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Data file not found: {data_path}")
+    
+    try:
+        with open(data_path, 'r') as f:
+            data = json.load(f)
+        
+        if not isinstance(data, list):
+            raise ValueError("Data file must contain a list of trajectories")
+        
+        if len(data) == 0:
+            raise ValueError("Data file is empty")
+        
+        # Check first trajectory structure
+        if isinstance(data[0], list):
+            # Format: [[action1, action2, ...], [action1, action2, ...], ...]
+            sample_action = data[0][0] if data[0] else {}
+        else:
+            # Format: [action1, action2, ...]
+            sample_action = data[0]
+        
+        required_fields = ["messages", "classification"]
+        for field in required_fields:
+            if field not in sample_action:
+                raise ValueError(f"Action missing required field: {field}")
+        
+        print(f"✓ Data validation passed: {len(data)} trajectories loaded")
+        
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON format in data file")
+
+def create_probe(probe_type: str, args: argparse.Namespace) -> Any:
+    """Create and configure the specified probe type."""
+    
+    # Create output directory
+    probe_output_dir = os.path.join(args.output_dir, f"{probe_type}_probe_layer{args.layer}")
+    os.makedirs(probe_output_dir, exist_ok=True)
+    
+    # Common arguments for all probes
+    common_args = {
+        "model_name": args.model,
+        "monitor_dir": probe_output_dir,
+        "inference_batch_size_per_device": args.batch_size,
+        "dtype": torch.bfloat16,
+        "layer": args.layer,
+    }
+    
+    if probe_type == "logistic":
+        probe = LogisticProbe(
+            **common_args,
+            fit_method=args.fit_method,
+            token_position_aggregation_strategy=args.token_aggregation,
+        )
+        
+    elif probe_type == "attention":
+        probe = LearnedAttentionProbe(
+            **common_args,
+            use_normalization=args.use_normalization,
+            attention_scaling=args.attention_scaling,
+            initialization_scale=args.initialization_scale,
+        )
+        
+    elif probe_type == "mean_diff":
+        probe = MeanDiffProbe(
+            **common_args,
+            token_position_aggregation_strategy=args.token_aggregation,
+        )
+    
+    return probe, probe_output_dir
+
+def save_training_config(args: argparse.Namespace, output_dir: str) -> None:
+    """Save training configuration to JSON file."""
+    config = {
+        "probe_type": args.probe_type,
+        "model": args.model,
+        "data": args.data,
+        "layer": args.layer,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "batch_size": args.batch_size,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    
+    # Add probe-specific config
+    if args.probe_type == "attention":
+        config.update({
+            "use_normalization": args.use_normalization,
+            "attention_scaling": args.attention_scaling,
+            "initialization_scale": args.initialization_scale,
+        })
+    elif args.probe_type == "logistic":
+        config.update({
+            "fit_method": args.fit_method,
+            "token_aggregation": args.token_aggregation,
+        })
+    elif args.probe_type == "mean_diff":
+        config.update({
+            "token_aggregation": args.token_aggregation,
+        })
+    
+    config_path = os.path.join(output_dir, "config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    print(f"💾 Training configuration saved: {config_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Train a specified probe.")
-    # Data Args
-    parser.add_argument("--safe_dataset_name", required=True, type=str, help="HF name for the safe dataset.")
-    parser.add_argument("--safe_dataset_config_name", type=str, default=None, help="Config for safe dataset.")
-    parser.add_argument("--unsafe_dataset_name", required=True, type=str, help="HF name for the unsafe dataset.")
-    parser.add_argument("--unsafe_dataset_config_name", type=str, default=None, help="Config for unsafe dataset.")
-    parser.add_argument("--dataset_split", type=str, default="train", help="Dataset split to use (e.g., train, test).")
-    parser.add_argument("--dataset_cache_dir", type=str, default=None, help="Cache directory for Hugging Face datasets.")
-
-    # Probe General Args
-    parser.add_argument("--probe_type", required=True, choices=["logistic_probe", "mean_diff_probe", "learned_attention_probe"], help="Type of probe.")
-    parser.add_argument("--base_model_name", required=True, type=str, help="HF name for the base model.")
-    parser.add_argument("--layer", required=True, type=int, help="Layer from base model for activations.")
-    parser.add_argument("--output_dir", required=True, type=str, help="Directory to save the trained probe.")
-
-    # Training Hyperparameters
-    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs (ignored by mean_diff_probe).")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate (ignored by mean_diff_probe).")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training and activation computation.")
-    parser.add_argument("--l2_penalty", type=float, default=0.001, help="L2 penalty (weight decay).")
-    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Max gradient norm for clipping.")
-    parser.add_argument("--optimizer_type", type=str, default="AdamW", choices=["AdamW", "SGD"], help="Optimizer type.")
-    parser.add_argument("--max_token_length", type=int, default=512, help="Max token length for tokenizer.")
-    parser.add_argument("--label_smoothing", type=float, default=0.0, help="Label smoothing factor.")
-
-
-    # Hardware/Precision Args
-    parser.add_argument("--device_str", type=str, default=None, help="Device ('cuda', 'cpu'). Auto-detected if None.")
-    parser.add_argument("--dtype_str", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"], help="Data type for model and probe.")
-    parser.add_argument("--load_in_8bit", action="store_true", help="Load base model in 8-bit via BitsAndBytes.")
-    parser.add_argument("--load_in_4bit", action="store_true", help="Load base model in 4-bit via BitsAndBytes.")
-
-
-    # Probe-Specific Args
-    # For LogisticProbe & MeanDiffProbe
-    parser.add_argument("--token_aggregation_strategy", type=str, default="last_only", choices=["mean", "soft_max", "last_only"])
-    # For LearnedAttentionProbe
-    parser.add_argument("--attn_use_normalization", action="store_true", help="Use LayerNorm in AttentionProbe.")
-    parser.add_argument("--attn_attention_scaling", type=lambda x: (str(x).lower() == 'true'), default=True, help="Scale attention scores in AttentionProbe.")
-    parser.add_argument("--attn_initialization_scale", type=float, default=1.0, help="Initial weight scale for AttentionProbe.")
-    parser.add_argument("--attn_temperature", type=float, default=2.0, help="Softmax temperature for AttentionProbe.")
-
-
-    args = parser.parse_args()
-
-    if args.load_in_8bit and args.load_in_4bit:
-        raise ValueError("Cannot use both --load_in_8bit and --load_in_4bit.")
-
-    # Load and prepare data
-    # This is done once, before probe initialization, on the main process if feasible, or by all.
-    # For now, let each process load, HF datasets handles caching.
-    print("Loading and preparing datasets...")
-    train_messages, train_labels = load_and_prepare_hf_datasets(
-        args.safe_dataset_name, args.unsafe_dataset_name,
-        args.safe_dataset_config_name, args.unsafe_dataset_config_name,
-        args.dataset_split, args.dataset_cache_dir
-    )
-    print(f"Loaded {len(train_messages)} training examples.")
-    if not train_messages:
-        print("No training data loaded. Exiting.")
-        return
-
-    ProbeClass = get_probe_class(args.probe_type)
+    """Main training function."""
+    print("🚀 WhiteBoxControl - Neural Probe Training")
+    print("=" * 50)
     
-    probe_specific_constructor_args = {}
-    if args.probe_type in ["logistic_probe", "mean_diff_probe"]:
-        probe_specific_constructor_args["token_position_aggregation_strategy"] = args.token_aggregation_strategy
-    elif args.probe_type == "learned_attention_probe":
-        probe_specific_constructor_args["use_normalization"] = args.attn_use_normalization
-        probe_specific_constructor_args["attention_scaling"] = args.attn_attention_scaling
-        probe_specific_constructor_args["initialization_scale"] = args.attn_initialization_scale
-        probe_specific_constructor_args["temperature"] = args.attn_temperature
-
-    print(f"Initializing probe: {args.probe_type}")
-    probe = ProbeClass(
-        base_model_name=args.base_model_name,
-        layer=args.layer,
-        probe_specific_kwargs=probe_specific_constructor_args, # This goes into BaseProbe's saved config
-        # These are direct args for BaseProbe and then specific probe's __init__
-        **(probe_specific_constructor_args), # Unpack for specific probe's __init__
-        device_str=args.device_str,
-        dtype_str=args.dtype_str,
-        load_in_8bit=args.load_in_8bit,
-        load_in_4bit=args.load_in_4bit,
-        output_dir_for_saving=args.output_dir
-    )
-
-    print(f"Starting training for {args.probe_type}...")
-    probe.train_on_data(
-        train_messages=train_messages,
-        train_labels=train_labels,
-        # val_messages/labels can be added here if validation data is prepared
-        epochs=args.epochs,
-        lr=args.learning_rate,
-        batch_size=args.batch_size,
-        l2_penalty=args.l2_penalty,
-        max_grad_norm=args.max_grad_norm,
-        optimizer_type=args.optimizer_type,
-        max_token_length=args.max_token_length,
-        label_smoothing=args.label_smoothing,
-    )
-
-    # Saving is handled by the probe instance itself using accelerator.is_main_process
-    probe.save_probe() # Uses output_dir_for_saving set during init
-
-    if probe.accelerator.is_main_process:
-        print(f"Probe training complete. Saved to {args.output_dir}")
-        # Save training script args for reproducibility
-        train_run_config = vars(args)
-        save_json(train_run_config, os.path.join(args.output_dir, "train_script_args.json"))
+    # Parse arguments
+    args = parse_args()
+    
+    # Setup
+    setup_gpu(args.gpu_id)
+    validate_data_file(args.data)
+    
+    print(f"\n📋 Training Configuration:")
+    print(f"  Probe Type: {args.probe_type}")
+    print(f"  Model: {args.model}")
+    print(f"  Data: {args.data}")
+    print(f"  Layer: {args.layer}")
+    print(f"  Epochs: {args.epochs}")
+    print(f"  Learning Rate: {args.lr or 'auto'}")
+    print(f"  Output: {args.output_dir}")
+    
+    # Create probe
+    print(f"\n🔧 Initializing {args.probe_type} probe...")
+    start_time = time.time()
+    
+    probe, output_dir = create_probe(args.probe_type, args)
+    
+    init_time = time.time() - start_time
+    print(f"✓ Probe initialized in {init_time:.2f} seconds")
+    
+    # Save configuration
+    if args.save_config:
+        save_training_config(args, output_dir)
+    
+    # Train probe
+    print(f"\n🎯 Starting training...")
+    start_time = time.time()
+    
+    training_kwargs = {
+        "clear_activation_cache": args.clear_cache,
+        "num_epochs": args.epochs,
+    }
+    
+    if args.lr is not None:
+        training_kwargs["lr"] = args.lr
+    
+    probe.train(args.data, **training_kwargs)
+    
+    training_time = time.time() - start_time
+    print(f"✓ Training completed in {training_time:.2f} seconds")
+    
+    # Save model parameters
+    model_path = os.path.join(output_dir, "weights.pt")
+    probe.save_model_params(model_path)
+    print(f"💾 Model weights saved: {model_path}")
+    
+    print(f"\n🎉 Training Complete!")
+    print(f"📁 All outputs saved to: {output_dir}")
+    print(f"⏱️  Total time: {init_time + training_time:.2f} seconds")
+    print(f"\n🔍 Next steps:")
+    print(f"  Evaluate: python EvalProbe.py --probe_dir {output_dir} --data /path/to/test.json")
 
 if __name__ == "__main__":
-    main()
+    main() 
