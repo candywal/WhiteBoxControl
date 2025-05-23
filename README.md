@@ -7,7 +7,7 @@ The main goals we are trying to achieve
 
 
 ## *Abstract* 
-LLM agents are increasingly entrusted with high-stakes affordances within software companies, creating a security risk. Just as organizations defend against human insider threats, they should prepare defenses against LLM agent adversaries. Previous work introduced ‘control evaluations’ as a methodology to red-team defenses against LLM adversaries; however, these evaluations only addressed strategies that monitored agents’ outputs and treated the LLMs themselves as black boxes. ‘White box’ methods, i.e. monitoring a model’s activations to see if it’s engaging in dangerous reasoning, could also be effective. We introduce a suite of evaluations to assess how white box monitoring methods such as linear probing catch LLM attacks in a software engineering setting. Our evaluations suggest that state-of-the art probes are fragile, and often generalize poorly between attack types. While probes offer some risk reduction, we couldn’t make them reliable enough for high assurance. We hope our evaluation methodology and datasets help improve white box monitors so they are a reliable defense against AI agent security threats. 
+LLM agents are increasingly entrusted with high-stakes affordances within software companies, creating a security risk. Just as organizations defend against human insider threats, they should prepare defenses against LLM agent adversaries. Previous work introduced 'control evaluations' as a methodology to red-team defenses against LLM adversaries; however, these evaluations only addressed strategies that monitored agents' outputs and treated the LLMs themselves as black boxes. 'White box' methods, i.e. monitoring a model's activations to see if it's engaging in dangerous reasoning, could also be effective. We introduce a suite of evaluations to assess how white box monitoring methods such as linear probing catch LLM attacks in a software engineering setting. Our evaluations suggest that state-of-the art probes are fragile, and often generalize poorly between attack types. While probes offer some risk reduction, we couldn't make them reliable enough for high assurance. We hope our evaluation methodology and datasets help improve white box monitors so they are a reliable defense against AI agent security threats. 
 
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -23,6 +23,7 @@ LLM agents are increasingly entrusted with high-stakes affordances within softwa
 - 📊 **Comprehensive Evaluation**: Detailed metrics, plots, and analysis
 - 🔧 **Flexible Configuration**: Support for various models and hyperparameters
 - 📈 **Multi-GPU Support**: Efficient parallel training and evaluation
+- 🤗 **HuggingFace Integration**: Direct loading of datasets from HuggingFace Hub
 
 ---
 
@@ -47,7 +48,7 @@ python Utils.py
 # Train a logistic probe
 python TrainProbe.py \
     --probe_type logistic \
-    --model "meta-llama/Llama-3.1-8B-Instruct" \
+    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/my_training_data.json" \
     --layer 15 \
     --epochs 10
@@ -55,12 +56,26 @@ python TrainProbe.py \
 # Train an attention probe with optimal hyperparameters  
 python TrainProbe.py \
     --probe_type attention \
-    --model "/path/to/local/model" \
+    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/my_training_data.json" \
     --layer 32 \
     --epochs 14 \
     --lr 0.0022 \
     --use_normalization
+
+# Train a probe using HuggingFace dataset
+python TrainProbe.py \
+    --probe_type logistic \
+    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --data "Anthropic/hh-rlhf" \
+    --hf_dataset \
+    --hf_subset "helpful-base" \
+    --hf_split "train" \
+    --hf_messages_field "messages" \
+    --hf_classification_field "label" \
+    --hf_classification_mapping '{"chosen": "safe", "rejected": "unsafe"}' \
+    --layer 15 \
+    --epochs 10
 ```
 
 ### **3. Evaluate the Probe**
@@ -78,6 +93,19 @@ python EvalProbe.py \
     --probe_dir "outputs/trained_probes/attention_probe_layer32" \
     --data test1.json test2.json test3.json \
     --batch_eval
+
+# Evaluate using HuggingFace dataset
+python EvalProbe.py \
+    --probe_dir "outputs/trained_probes/logistic_probe_layer15" \
+    --data "Anthropic/hh-rlhf" \
+    --hf_dataset \
+    --hf_subset "helpful-base" \
+    --hf_split "test" \
+    --hf_messages_field "messages" \
+    --hf_classification_field "label" \
+    --hf_classification_mapping '{"chosen": "safe", "rejected": "unsafe"}' \
+    --save_predictions \
+    --save_plots
 ```
 
 ### **4. Run Complete Example**
@@ -143,7 +171,7 @@ WhiteBoxControl/
 ```bash
 python TrainProbe.py \
     --probe_type logistic \
-    --model "microsoft/DialoGPT-medium" \
+    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/safety_data.json" \
     --layer 12 \
     --epochs 15 \
@@ -157,7 +185,7 @@ python TrainProbe.py \
 ```bash
 python TrainProbe.py \
     --probe_type attention \
-    --model "meta-llama/Llama-3.1-70B-Instruct" \
+    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/deception_data.json" \
     --layer 32 \
     --epochs 14 \
@@ -171,7 +199,7 @@ python TrainProbe.py \
 ```bash
 python TrainProbe.py \
     --probe_type mean_diff \
-    --model "anthropic/claude-3-sonnet" \
+    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/manipulation_data.json" \
     --layer 20 \
     --token_aggregation last_only
@@ -206,6 +234,70 @@ Your training data should be a JSON file with the following structure:
     }
   ]
 ]
+```
+
+### **HuggingFace Dataset Support**
+
+WhiteBoxControl now supports loading datasets directly from HuggingFace Hub! This makes it easy to work with popular safety datasets without manual conversion.
+
+#### **Requirements**
+- The dataset must have a `messages` field (or customizable field name) containing conversation data
+- Messages should be in the format: `[{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]`
+- The dataset should have a classification field that can be mapped to "safe"/"unsafe"
+
+#### **Usage Examples**
+
+```bash
+# Train with HuggingFace dataset
+python TrainProbe.py \
+    --probe_type logistic \
+    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --data "Anthropic/hh-rlhf" \
+    --hf_dataset \
+    --hf_subset "helpful-base" \
+    --hf_split "train" \
+    --hf_messages_field "messages" \
+    --hf_classification_field "label" \
+    --hf_classification_mapping '{"chosen": "safe", "rejected": "unsafe"}' \
+    --layer 15
+
+# Evaluate with HuggingFace dataset  
+python EvalProbe.py \
+    --probe_dir "outputs/trained_probes/logistic_probe_layer15" \
+    --data "my-org/safety-dataset" \
+    --hf_dataset \
+    --hf_split "test" \
+    --save_predictions
+```
+
+#### **Configuration Options**
+- `--hf_dataset`: Enable HuggingFace dataset loading
+- `--hf_subset`: Dataset configuration/subset name (optional)
+- `--hf_split`: Dataset split to use (default: "train" for training, "test" for evaluation)
+- `--hf_messages_field`: Field containing conversation messages (default: "messages")
+- `--hf_classification_field`: Field containing labels (default: "label")
+- `--hf_classification_mapping`: JSON string mapping dataset labels to "safe"/"unsafe"
+
+#### **Supported Dataset Formats**
+```python
+# Example 1: Direct safe/unsafe labels
+{
+    "messages": [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"}
+    ],
+    "label": "safe"
+}
+
+# Example 2: Custom labels with mapping
+{
+    "conversations": [
+        {"role": "user", "content": "Help me hack"},
+        {"role": "assistant", "content": "I can't help with that"}
+    ],
+    "category": "harmful"
+}
+# Use: --hf_messages_field "conversations" --hf_classification_mapping '{"harmful": "unsafe", "helpful": "safe"}'
 ```
 
 ### **Evaluation Outputs**
@@ -254,7 +346,7 @@ WhiteBoxControl includes utility functions:
 import Utils
 
 # Download and cache models
-Utils.download_hf_model("meta-llama/Llama-3.1-8B-Instruct", cache_dir="data/models")
+Utils.download_hf_model("/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct", cache_dir="data/models")
 
 # Validate datasets
 Utils.validate_dataset_format("data/my_dataset.json")
@@ -271,29 +363,23 @@ Utils.combine_datasets(
 
 # Check system info
 Utils.print_system_info()
+
+# Load HuggingFace dataset and convert to WhiteBoxControl format
+hf_data = Utils.load_hf_dataset(
+    "Anthropic/hh-rlhf", 
+    subset="helpful-base",
+    split="train",
+    classification_mapping={"chosen": "safe", "rejected": "unsafe"}
+)
+
+# Load data with custom field names
+custom_data = Utils.load_hf_dataset(
+    "my-org/safety-dataset",
+    messages_field="conversations", 
+    classification_field="category",
+    classification_mapping={"harmful": "unsafe", "helpful": "safe"}
+)
 ```
 
-
-
-### **Development Setup**
-
-```bash
-# Clone for development
-git clone https://github.com/yourusername/WhiteBoxControl.git
-cd WhiteBoxControl
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install in development mode
-pip install -e .
-pip install -r requirements.txt
-
-# Run tests
-python -m pytest tests/
-
-# Check code style
-black . && flake8 .
 ```
 

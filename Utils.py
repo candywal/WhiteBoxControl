@@ -18,6 +18,12 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+try:
+    from datasets import load_dataset
+    HF_DATASETS_AVAILABLE = True
+except ImportError:
+    HF_DATASETS_AVAILABLE = False
+
 def download_hf_model(model_name: str, cache_dir: Optional[str] = None) -> str:
     """
     Download a model from HuggingFace Hub.
@@ -79,16 +85,150 @@ def validate_model_path(model_path: str) -> bool:
     
     return False
 
-def load_trajectory_data(data_path: str) -> List[Dict[str, Any]]:
+def load_hf_dataset(dataset_name: str, 
+                   subset: Optional[str] = None,
+                   split: str = "train",
+                   classification_mapping: Optional[Dict[str, str]] = None,
+                   classification_field: str = "label",
+                   messages_field: str = "messages") -> List[Dict[str, Any]]:
     """
-    Load trajectory data from JSON file.
+    Load a Hugging Face dataset and convert it to WhiteBoxControl format.
     
     Args:
-        data_path: Path to JSON file containing trajectories
+        dataset_name: HuggingFace dataset name (e.g., "Anthropic/hh-rlhf")
+        subset: Dataset subset/config name (optional)
+        split: Dataset split to load (default: "train")
+        classification_mapping: Mapping from dataset labels to "safe"/"unsafe"
+                               If None, assumes labels are already "safe"/"unsafe"
+        classification_field: Field name containing the classification (default: "label")
+        messages_field: Field name containing the messages (default: "messages")
+    
+    Returns:
+        List of trajectories in WhiteBoxControl format
+    
+    Example:
+        # For a dataset with "safe"/"unsafe" labels
+        data = load_hf_dataset("my-org/safety-dataset")
+        
+        # For a dataset with custom labels
+        data = load_hf_dataset(
+            "my-org/other-dataset",
+            classification_mapping={"positive": "safe", "negative": "unsafe"}
+        )
+    """
+    if not HF_DATASETS_AVAILABLE:
+        raise ImportError("datasets library not available. Install with: pip install datasets>=2.14.0")
+    
+    print(f"📥 Loading HuggingFace dataset: {dataset_name}")
+    if subset:
+        print(f"   Subset: {subset}")
+    print(f"   Split: {split}")
+    
+    try:
+        # Load dataset
+        if subset:
+            dataset = load_dataset(dataset_name, subset, split=split)
+        else:
+            dataset = load_dataset(dataset_name, split=split)
+        
+        trajectories = []
+        
+        for idx, example in enumerate(dataset):
+            # Extract messages
+            if messages_field not in example:
+                raise ValueError(f"Messages field '{messages_field}' not found in dataset. "
+                               f"Available fields: {list(example.keys())}")
+            
+            messages = example[messages_field]
+            
+            # Validate messages format
+            if not isinstance(messages, list):
+                raise ValueError(f"Messages field must be a list, got {type(messages)}")
+            
+            for message in messages:
+                if not isinstance(message, dict) or "role" not in message or "content" not in message:
+                    raise ValueError("Each message must be a dict with 'role' and 'content' fields")
+            
+            # Extract classification
+            if classification_field in example:
+                classification = example[classification_field]
+                
+                # Apply mapping if provided
+                if classification_mapping:
+                    if classification not in classification_mapping:
+                        raise ValueError(f"Classification '{classification}' not found in mapping. "
+                                       f"Available mappings: {list(classification_mapping.keys())}")
+                    classification = classification_mapping[classification]
+                
+                # Validate classification
+                if classification not in ["safe", "unsafe"]:
+                    raise ValueError(f"Classification must be 'safe' or 'unsafe', got '{classification}'")
+            
+            else:
+                # If no classification field, assume we need manual labeling
+                print(f"⚠️  No classification field '{classification_field}' found. "
+                      f"Available fields: {list(example.keys())}")
+                print("You'll need to manually add classifications to use this dataset.")
+                classification = "safe"  # Default value
+            
+            # Create action in WhiteBoxControl format
+            action = {
+                "messages": messages,
+                "classification": classification,
+                "trajectory_index": idx,
+                "action_id": 1,
+                # Add original dataset fields as extra metadata
+                "hf_dataset_name": dataset_name,
+                "hf_dataset_subset": subset,
+                "hf_dataset_split": split,
+                "hf_original_index": idx,
+            }
+            
+            # Add any additional fields from the dataset
+            for key, value in example.items():
+                if key not in [messages_field, classification_field]:
+                    action[f"hf_{key}"] = value
+            
+            # Wrap action in trajectory (each example is its own trajectory)
+            trajectories.append([action])
+        
+        print(f"✓ Loaded {len(trajectories)} trajectories from HuggingFace dataset")
+        return trajectories
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to load HuggingFace dataset {dataset_name}: {e}")
+
+def load_trajectory_data(data_path: str, 
+                        hf_dataset_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """
+    Load trajectory data from JSON file or HuggingFace dataset.
+    
+    Args:
+        data_path: Path to JSON file OR HuggingFace dataset name (if hf_dataset_config provided)
+        hf_dataset_config: Configuration for loading HuggingFace dataset
+                          Example: {
+                              "subset": "helpful-base", 
+                              "split": "train",
+                              "classification_mapping": {"chosen": "safe", "rejected": "unsafe"},
+                              "classification_field": "preference",
+                              "messages_field": "conversations"
+                          }
     
     Returns:
         List of trajectory dictionaries
     """
+    # If HuggingFace config is provided, load from HF
+    if hf_dataset_config is not None:
+        return load_hf_dataset(data_path, **hf_dataset_config)
+    
+    # Check if it looks like a HuggingFace dataset name
+    if "/" in data_path and not os.path.exists(data_path):
+        print(f"🤔 '{data_path}' looks like a HuggingFace dataset name but no config provided.")
+        print("   To load from HuggingFace, use the --hf_dataset flag with TrainProbe.py")
+        print("   or provide hf_dataset_config to this function.")
+        print("   Treating as local file path...")
+    
+    # Load from local JSON file
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Data file not found: {data_path}")
     

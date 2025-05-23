@@ -51,7 +51,21 @@ Examples:
     parser.add_argument("--probe_dir", type=str, required=True,
                        help="Directory containing trained probe (with config.json and weights.pt)")
     parser.add_argument("--data", type=str, nargs="+", required=True,
-                       help="Path(s) to test data (JSON file(s) with trajectories)")
+                       help="Path(s) to test data (JSON file(s) with trajectories) OR HuggingFace dataset name(s)")
+    
+    # HuggingFace dataset arguments
+    parser.add_argument("--hf_dataset", action="store_true",
+                       help="Load data from HuggingFace dataset instead of local JSON file")
+    parser.add_argument("--hf_subset", type=str, default=None,
+                       help="HuggingFace dataset subset/config name")
+    parser.add_argument("--hf_split", type=str, default="test",
+                       help="HuggingFace dataset split to load (default: test)")
+    parser.add_argument("--hf_messages_field", type=str, default="messages",
+                       help="Field name containing messages in HF dataset (default: messages)")
+    parser.add_argument("--hf_classification_field", type=str, default="label",
+                       help="Field name containing classification in HF dataset (default: label)")
+    parser.add_argument("--hf_classification_mapping", type=str, default=None,
+                       help="JSON string mapping HF labels to safe/unsafe (e.g., '{\"positive\": \"safe\", \"negative\": \"unsafe\"}')")
     
     # Optional arguments
     parser.add_argument("--output_dir", type=str, default=None,
@@ -100,8 +114,63 @@ def setup_gpu(gpu_id: Optional[int]) -> None:
     else:
         print(f"🔧 Using all available GPUs")
 
-def validate_data_file(data_path: str) -> int:
+def validate_data_file(data_path: str, args: argparse.Namespace) -> int:
     """Validate data file and return number of trajectories."""
+    
+    # If loading from HuggingFace dataset
+    if args.hf_dataset:
+        try:
+            # Import here to avoid dependency issues if not using HF datasets
+            from datasets import load_dataset
+            
+            print(f"🔍 Validating HuggingFace dataset: {data_path}")
+            
+            # Parse classification mapping if provided
+            classification_mapping = None
+            if args.hf_classification_mapping:
+                try:
+                    classification_mapping = json.loads(args.hf_classification_mapping)
+                except json.JSONDecodeError:
+                    raise ValueError(f"Invalid JSON in classification mapping: {args.hf_classification_mapping}")
+            
+            # Try to load a small sample to validate
+            if args.hf_subset:
+                dataset = load_dataset(data_path, args.hf_subset, split=f"{args.hf_split}[:5]")
+            else:
+                dataset = load_dataset(data_path, split=f"{args.hf_split}[:5]")
+            
+            if len(dataset) == 0:
+                raise ValueError(f"Dataset split '{args.hf_split}' is empty")
+            
+            # Check if required fields exist
+            sample = dataset[0]
+            if args.hf_messages_field not in sample:
+                raise ValueError(f"Messages field '{args.hf_messages_field}' not found. Available fields: {list(sample.keys())}")
+            
+            # Check messages format
+            messages = sample[args.hf_messages_field]
+            if not isinstance(messages, list):
+                raise ValueError(f"Messages field must be a list, got {type(messages)}")
+            
+            if len(messages) > 0:
+                if not isinstance(messages[0], dict) or "role" not in messages[0] or "content" not in messages[0]:
+                    raise ValueError("Messages must be a list of dicts with 'role' and 'content' fields")
+            
+            # Get the full dataset size
+            if args.hf_subset:
+                full_dataset = load_dataset(data_path, args.hf_subset, split=args.hf_split)
+            else:
+                full_dataset = load_dataset(data_path, split=args.hf_split)
+            
+            print(f"✓ HuggingFace dataset validation passed: {len(full_dataset)} examples")
+            return len(full_dataset)
+            
+        except ImportError:
+            raise ImportError("datasets library not available. Install with: pip install datasets>=2.14.0")
+        except Exception as e:
+            raise RuntimeError(f"Failed to validate HuggingFace dataset {data_path}: {e}")
+    
+    # Original JSON file validation
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Data file not found: {data_path}")
     
@@ -271,34 +340,81 @@ def evaluate_single_dataset(probe, data_path: str, output_dir: str, args: argpar
     dataset_name = os.path.splitext(os.path.basename(data_path))[0]
     print(f"\n🔍 Evaluating on: {dataset_name}")
     
-    num_trajectories = validate_data_file(data_path)
+    num_trajectories = validate_data_file(data_path, args)
     print(f"✓ Data validation passed: {num_trajectories} trajectories")
     
-    # Run evaluation
-    results_path = os.path.join(output_dir, f"{dataset_name}_results.pkl")
-    start_time = time.time()
+    # Prepare data path for evaluation
+    data_path_for_evaluation = data_path
+    temp_json_file = None
     
-    predictions = probe.evaluate(
-        data_path,
-        out_path=results_path,
-        clear_activation_cache=args.clear_cache,
-    )
+    # If using HuggingFace dataset, load and convert to JSON
+    if args.hf_dataset:
+        import tempfile
+        from Utils import load_hf_dataset
+        
+        print(f"🔄 Loading HuggingFace dataset and converting to evaluation format...")
+        
+        # Parse classification mapping if provided
+        classification_mapping = None
+        if args.hf_classification_mapping:
+            try:
+                classification_mapping = json.loads(args.hf_classification_mapping)
+            except json.JSONDecodeError:
+                raise ValueError(f"Invalid JSON in classification mapping: {args.hf_classification_mapping}")
+        
+        # Load HuggingFace dataset
+        trajectories = load_hf_dataset(
+            dataset_name=data_path,
+            subset=args.hf_subset,
+            split=args.hf_split,
+            classification_mapping=classification_mapping,
+            classification_field=args.hf_classification_field,
+            messages_field=args.hf_messages_field
+        )
+        
+        # Create temporary JSON file
+        temp_json_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        json.dump(trajectories, temp_json_file, indent=2)
+        temp_json_file.close()
+        
+        data_path_for_evaluation = temp_json_file.name
+        print(f"✓ HuggingFace dataset converted and saved to temporary file")
     
-    eval_time = time.time() - start_time
-    print(f"✓ Evaluation completed in {eval_time:.2f} seconds")
+    try:
+        # Run evaluation
+        results_path = os.path.join(output_dir, f"{dataset_name}_results.pkl")
+        start_time = time.time()
+        
+        predictions = probe.evaluate(
+            data_path_for_evaluation,
+            out_path=results_path,
+            clear_activation_cache=args.clear_cache,
+        )
+        
+        eval_time = time.time() - start_time
+        print(f"✓ Evaluation completed in {eval_time:.2f} seconds")
+        
+        # Print metrics
+        print_evaluation_metrics(predictions, dataset_name)
+        
+        # Save additional outputs
+        if args.save_predictions:
+            csv_path = os.path.join(output_dir, f"{dataset_name}_predictions.csv")
+            save_predictions_csv(predictions, predictions.labels, csv_path)
+        
+        if args.save_plots:
+            generate_evaluation_plots(predictions, output_dir)
+        
+        return predictions
     
-    # Print metrics
-    print_evaluation_metrics(predictions, dataset_name)
-    
-    # Save additional outputs
-    if args.save_predictions:
-        csv_path = os.path.join(output_dir, f"{dataset_name}_predictions.csv")
-        save_predictions_csv(predictions, predictions.labels, csv_path)
-    
-    if args.save_plots:
-        generate_evaluation_plots(predictions, output_dir)
-    
-    return predictions
+    finally:
+        # Clean up temporary file if created
+        if temp_json_file is not None:
+            try:
+                os.unlink(temp_json_file.name)
+                print(f"🗑️  Cleaned up temporary file")
+            except OSError:
+                pass  # File may already be deleted
 
 def main():
     """Main evaluation function."""
