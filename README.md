@@ -20,34 +20,6 @@
 
 ---
 
-## 🏗️ **Architecture Overview**
-
-WhiteBoxControl extracts activations from transformer layers and trains specialized probes to classify model behavior as "safe" or "unsafe":
-
-```mermaid
-graph LR
-    A[Input Text] --> B[Transformer Model]
-    B --> C[Layer Activations]
-    C --> D[Probe Training]
-    D --> E[Safety Classification]
-    
-    style A fill:#e1f5fe
-    style B fill:#f3e5f5
-    style C fill:#e8f5e8
-    style D fill:#fff3e0
-    style E fill:#ffebee
-```
-
-### **Probe Types**
-
-| Probe Type | Description | Best For | Performance |
-|------------|-------------|----------|-------------|
-| **🔵 Logistic** | Linear classifier with token aggregation | Simple, fast baseline | ⭐⭐⭐⭐⭐ (AUC: 1.00) |
-| **🔴 Attention** | Learned attention mechanism | Complex patterns, interpretability | ⭐⭐⭐⭐☆ (AUC: 0.82) |
-| **🟡 Mean Difference** | Non-parametric class mean comparison | Quick analysis, no training | ⭐⭐⭐⭐⭐ (AUC: 1.00) |
-
----
-
 ## 🚀 **Quick Start**
 
 ### **1. Installation**
