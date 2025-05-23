@@ -48,7 +48,7 @@ python Utils.py
 # Train a logistic probe
 python TrainProbe.py \
     --probe_type logistic \
-    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --model "Qwen/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/my_training_data.json" \
     --layer 15 \
     --epochs 10
@@ -56,7 +56,7 @@ python TrainProbe.py \
 # Train an attention probe with optimal hyperparameters  
 python TrainProbe.py \
     --probe_type attention \
-    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --model "Qwen/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/my_training_data.json" \
     --layer 32 \
     --epochs 14 \
@@ -66,7 +66,7 @@ python TrainProbe.py \
 # Train a probe using HuggingFace dataset
 python TrainProbe.py \
     --probe_type logistic \
-    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --model "Qwen/Qwen2.5-Coder-32B-Instruct" \
     --data "Anthropic/hh-rlhf" \
     --hf_dataset \
     --hf_subset "helpful-base" \
@@ -171,7 +171,7 @@ WhiteBoxControl/
 ```bash
 python TrainProbe.py \
     --probe_type logistic \
-    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --model "Qwen/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/safety_data.json" \
     --layer 12 \
     --epochs 15 \
@@ -185,7 +185,7 @@ python TrainProbe.py \
 ```bash
 python TrainProbe.py \
     --probe_type attention \
-    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --model "Qwen/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/deception_data.json" \
     --layer 32 \
     --epochs 14 \
@@ -199,7 +199,7 @@ python TrainProbe.py \
 ```bash
 python TrainProbe.py \
     --probe_type mean_diff \
-    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --model "Qwen/Qwen2.5-Coder-32B-Instruct" \
     --data "data/datasets/manipulation_data.json" \
     --layer 20 \
     --token_aggregation last_only
@@ -251,7 +251,7 @@ WhiteBoxControl now supports loading datasets directly from HuggingFace Hub! Thi
 # Train with HuggingFace dataset
 python TrainProbe.py \
     --probe_type logistic \
-    --model "/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct" \
+    --model "Qwen/Qwen2.5-Coder-32B-Instruct" \
     --data "Anthropic/hh-rlhf" \
     --hf_dataset \
     --hf_subset "helpful-base" \
@@ -346,7 +346,7 @@ WhiteBoxControl includes utility functions:
 import Utils
 
 # Download and cache models
-Utils.download_hf_model("/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct", cache_dir="data/models")
+Utils.download_hf_model("Qwen/Qwen2.5-Coder-32B-Instruct", cache_dir="data/models")
 
 # Validate datasets
 Utils.validate_dataset_format("data/my_dataset.json")

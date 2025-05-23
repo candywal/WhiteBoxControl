@@ -5,7 +5,7 @@ echo "🚀 WhiteBoxControl - Example Training and Evaluation Script"
 echo "============================================================"
 
 # Configuration
-MODEL="/mnt/nvme5/anshul/models/Qwen2.5-Coder-32B-Instruct"
+MODEL="Qwen/Qwen2.5-Coder-32B-Instruct"
 TRAIN_DATA="data/datasets/combined/code_sabotage_train.json"
 TEST_DATA="data/datasets/combined/code_sabotage_test.json"
 OUTPUT_DIR="outputs/trained_probes"

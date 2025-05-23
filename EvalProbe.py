@@ -15,7 +15,6 @@ import sys
 import argparse
 import json
 import time
-import pickle
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -26,6 +25,9 @@ from probes.logistic_probe import LogisticProbe
 from probes.attention_probe import LearnedAttentionProbe
 from probes.mean_diff_probe import MeanDiffProbe
 import torch
+
+# Import common utilities from Utils
+from Utils import setup_gpu, validate_data_file_basic, validate_hf_dataset, prepare_hf_dataset_for_training
 
 def parse_args():
     """Parse command line arguments."""
@@ -105,89 +107,6 @@ def load_probe_config(probe_dir: str) -> Dict[str, Any]:
             raise ValueError(f"Configuration missing required field: {field}")
     
     return config
-
-def setup_gpu(gpu_id: Optional[int]) -> None:
-    """Setup GPU configuration."""
-    if gpu_id is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-        print(f"🔧 Using GPU {gpu_id}")
-    else:
-        print(f"🔧 Using all available GPUs")
-
-def validate_data_file(data_path: str, args: argparse.Namespace) -> int:
-    """Validate data file and return number of trajectories."""
-    
-    # If loading from HuggingFace dataset
-    if args.hf_dataset:
-        try:
-            # Import here to avoid dependency issues if not using HF datasets
-            from datasets import load_dataset
-            
-            print(f"🔍 Validating HuggingFace dataset: {data_path}")
-            
-            # Parse classification mapping if provided
-            classification_mapping = None
-            if args.hf_classification_mapping:
-                try:
-                    classification_mapping = json.loads(args.hf_classification_mapping)
-                except json.JSONDecodeError:
-                    raise ValueError(f"Invalid JSON in classification mapping: {args.hf_classification_mapping}")
-            
-            # Try to load a small sample to validate
-            if args.hf_subset:
-                dataset = load_dataset(data_path, args.hf_subset, split=f"{args.hf_split}[:5]")
-            else:
-                dataset = load_dataset(data_path, split=f"{args.hf_split}[:5]")
-            
-            if len(dataset) == 0:
-                raise ValueError(f"Dataset split '{args.hf_split}' is empty")
-            
-            # Check if required fields exist
-            sample = dataset[0]
-            if args.hf_messages_field not in sample:
-                raise ValueError(f"Messages field '{args.hf_messages_field}' not found. Available fields: {list(sample.keys())}")
-            
-            # Check messages format
-            messages = sample[args.hf_messages_field]
-            if not isinstance(messages, list):
-                raise ValueError(f"Messages field must be a list, got {type(messages)}")
-            
-            if len(messages) > 0:
-                if not isinstance(messages[0], dict) or "role" not in messages[0] or "content" not in messages[0]:
-                    raise ValueError("Messages must be a list of dicts with 'role' and 'content' fields")
-            
-            # Get the full dataset size
-            if args.hf_subset:
-                full_dataset = load_dataset(data_path, args.hf_subset, split=args.hf_split)
-            else:
-                full_dataset = load_dataset(data_path, split=args.hf_split)
-            
-            print(f"✓ HuggingFace dataset validation passed: {len(full_dataset)} examples")
-            return len(full_dataset)
-            
-        except ImportError:
-            raise ImportError("datasets library not available. Install with: pip install datasets>=2.14.0")
-        except Exception as e:
-            raise RuntimeError(f"Failed to validate HuggingFace dataset {data_path}: {e}")
-    
-    # Original JSON file validation
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Data file not found: {data_path}")
-    
-    try:
-        with open(data_path, 'r') as f:
-            data = json.load(f)
-        
-        if not isinstance(data, list):
-            raise ValueError("Data file must contain a list of trajectories")
-        
-        if len(data) == 0:
-            raise ValueError("Data file is empty")
-        
-        return len(data)
-        
-    except json.JSONDecodeError:
-        raise ValueError("Invalid JSON format in data file")
 
 def load_trained_probe(probe_dir: str, config: Dict[str, Any]) -> Any:
     """Load the trained probe based on configuration."""
@@ -340,7 +259,11 @@ def evaluate_single_dataset(probe, data_path: str, output_dir: str, args: argpar
     dataset_name = os.path.splitext(os.path.basename(data_path))[0]
     print(f"\n🔍 Evaluating on: {dataset_name}")
     
-    num_trajectories = validate_data_file(data_path, args)
+    # Validate data file
+    if args.hf_dataset:
+        num_trajectories = validate_hf_dataset(data_path, args)
+    else:
+        num_trajectories = validate_data_file_basic(data_path)
     print(f"✓ Data validation passed: {num_trajectories} trajectories")
     
     # Prepare data path for evaluation
@@ -349,35 +272,8 @@ def evaluate_single_dataset(probe, data_path: str, output_dir: str, args: argpar
     
     # If using HuggingFace dataset, load and convert to JSON
     if args.hf_dataset:
-        import tempfile
-        from Utils import load_hf_dataset
-        
-        print(f"🔄 Loading HuggingFace dataset and converting to evaluation format...")
-        
-        # Parse classification mapping if provided
-        classification_mapping = None
-        if args.hf_classification_mapping:
-            try:
-                classification_mapping = json.loads(args.hf_classification_mapping)
-            except json.JSONDecodeError:
-                raise ValueError(f"Invalid JSON in classification mapping: {args.hf_classification_mapping}")
-        
-        # Load HuggingFace dataset
-        trajectories = load_hf_dataset(
-            dataset_name=data_path,
-            subset=args.hf_subset,
-            split=args.hf_split,
-            classification_mapping=classification_mapping,
-            classification_field=args.hf_classification_field,
-            messages_field=args.hf_messages_field
-        )
-        
-        # Create temporary JSON file
-        temp_json_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
-        json.dump(trajectories, temp_json_file, indent=2)
-        temp_json_file.close()
-        
-        data_path_for_evaluation = temp_json_file.name
+        data_path_for_evaluation = prepare_hf_dataset_for_training(data_path, args)
+        temp_json_file = data_path_for_evaluation
         print(f"✓ HuggingFace dataset converted and saved to temporary file")
     
     try:
@@ -409,9 +305,9 @@ def evaluate_single_dataset(probe, data_path: str, output_dir: str, args: argpar
     
     finally:
         # Clean up temporary file if created
-        if temp_json_file is not None:
+        if temp_json_file is not None and args.hf_dataset:
             try:
-                os.unlink(temp_json_file.name)
+                os.unlink(temp_json_file)
                 print(f"🗑️  Cleaned up temporary file")
             except OSError:
                 pass  # File may already be deleted
