@@ -37,8 +37,10 @@ class LearnedAttentionProbe(Monitor):
         fit_method: Literal["lbfgs", "adam"] = "adam",
         use_normalization: bool = False,
         attention_scaling: bool = True,
-        initialization_scale: float = 1.0,
+        initialization_scale: float = 2.0,
+        temperature: float = 1.0,
         on_policy_model_organism: bool = False,
+        early_stopping: float = None,
         **kwargs,
     ):
         # Minimal initialization prints
@@ -48,9 +50,11 @@ class LearnedAttentionProbe(Monitor):
         self.use_normalization = use_normalization
         self.attention_scaling = attention_scaling
         self.initialization_scale = initialization_scale
+        self.temperature = temperature
         self.init_params()
         self.probe_type = "learned_attention_probe"
         self.on_policy_model_organism = on_policy_model_organism
+        self.early_stopping = early_stopping
 
     def init_params(self):
         config = AutoConfig.from_pretrained(self.model_name)
@@ -92,6 +96,60 @@ class LearnedAttentionProbe(Monitor):
                 # Initialize with larger values to avoid tiny gradients
                 param.data.mul_(self.initialization_scale)
 
+    def _get_response_token_mask(self, trajectory):
+        """
+        Identify which tokens correspond to the assistant's response (not the prompt).
+        Returns a boolean mask where True indicates response tokens.
+        """
+        messages = trajectory[-1]["messages"]
+
+        # Tokenize the full conversation
+        full_input_ids = self.tokenizer.apply_chat_template(
+            [messages],
+            tokenize=True,
+            add_generation_prompt=False,
+            return_tensors="pt",
+            padding=False,
+        )[0]
+
+        # Tokenize just the conversation up to (but not including) the last assistant message
+        # Find the last assistant message
+        last_assistant_idx = None
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "assistant":
+                last_assistant_idx = i
+
+        if last_assistant_idx is None:
+            raise ValueError("No assistant messages found in trajectory")
+
+        # Create conversation without the last assistant message
+        prompt_messages = messages[:last_assistant_idx]
+
+        if len(prompt_messages) == 0:
+            # Only assistant message, attend to everything except special tokens
+            mask = torch.ones(len(full_input_ids), dtype=torch.bool, device=self.device)
+            return mask
+
+        # Tokenize the prompt part (conversation without final assistant response)
+        prompt_input_ids = self.tokenizer.apply_chat_template(
+            [prompt_messages],
+            tokenize=True,
+            add_generation_prompt=True,  # This adds the prompt for assistant response
+            return_tensors="pt",
+            padding=False,
+        )[0]
+
+        # The response tokens are everything after the prompt
+        prompt_length = len(prompt_input_ids)
+        full_length = len(full_input_ids)
+
+        # Create mask: False for prompt tokens, True for response tokens
+        mask = torch.zeros(full_length, dtype=torch.bool, device=self.device)
+        if prompt_length < full_length:
+            mask[prompt_length:] = True
+
+        return mask
+
     def forward(self, trajectories, trajectory_activations, extra_info=None):
         if self.params is None:
             raise ValueError(
@@ -105,47 +163,64 @@ class LearnedAttentionProbe(Monitor):
 
         predictions = torch.zeros(len(trajectories), device=self.device, dtype=self.dtype)
 
-        # Debug info structure
-        debug_info = {
-            "score_stats": [],
-            "attention_stats": [],
-            "value_stats": [],
-            "logit_stats": [],
-        }
-
         # Static counter to only print every 5 updates
         if not hasattr(self, "update_counter"):
             self.update_counter = 0
         self.update_counter += 1
-        should_print = self.update_counter % 5 == 0
 
         for i, (trajectory, activations) in enumerate(zip(trajectories, trajectory_activations)):
             activations = activations.to(self.device)
             assert activations.shape[0] == 1
 
-            # Apply normalization if enabled (removed prints)
+            # Apply normalization if enabled
             if self.params.use_normalization:
                 normalized_activations = self.params.norm(activations[0])
             else:
                 normalized_activations = activations[0]
 
-            # Compute attention scores and weights
+            # Get mask for response tokens only
+            response_mask = self._get_response_token_mask(trajectory)
+
+            # Ensure mask length matches activations
+            seq_len = normalized_activations.shape[0]
+            if len(response_mask) != seq_len:
+                # Adjust mask length to match activations
+                if len(response_mask) > seq_len:
+                    response_mask = response_mask[:seq_len]
+                else:
+                    # Pad mask with False (don't attend to padded tokens)
+                    padding = torch.zeros(
+                        seq_len - len(response_mask), dtype=torch.bool, device=self.device
+                    )
+                    response_mask = torch.cat([response_mask, padding])
+
+            # Check if we have any response tokens to attend to
+            if not response_mask.any():
+                raise ValueError("No response tokens found in trajectory")
+
+            # Compute attention scores for all tokens
             scores = self.params.score_vector(normalized_activations)
+
+            # Mask out non-response tokens by setting their scores to very negative value
+            masked_scores = scores.clone()
+            masked_scores[~response_mask] = float("-inf")
 
             # Scale scores by sqrt(hidden_dim) if enabled
             if self.attention_scaling:
                 scaling_factor = math.sqrt(self.hidden_size)
-                scores = scores / scaling_factor
+                masked_scores = masked_scores / scaling_factor
 
-            # Subtract max for numerical stability before softmax
-            scores = scores - scores.max(dim=0, keepdim=True).values
-            temperature = 2.0  # Higher values = softer attention
-            attention_weights = torch.softmax(scores / temperature, dim=0)
+            # Subtract max for numerical stability before softmax (only among non-masked tokens)
+            if response_mask.any():
+                max_score = masked_scores[response_mask].max()
+                masked_scores[response_mask] = masked_scores[response_mask] - max_score
 
-            # Compute values (removed verbose prints)
+            attention_weights = torch.softmax(masked_scores / self.temperature, dim=0)
+
+            # Compute values for all tokens
             values = self.params.value_vector(normalized_activations)
 
-            # Simple weighted sum
+            # Weighted sum only over response tokens (non-response tokens will have ~0 weight due to masking)
             logits = (attention_weights * values).sum()
 
             # Only show warnings for NaN/Inf values
@@ -164,15 +239,8 @@ class LearnedAttentionProbe(Monitor):
 
     def save_model_params(self, file_path: str):
         if self.params is not None:
-            state_dict = {
-                "score_vector": self.params.score_vector.state_dict(),
-                "value_vector": self.params.value_vector.state_dict(),
-            }
-            # Also save normalization layer if it exists
-            if self.params.use_normalization:
-                state_dict["norm"] = self.params.norm.state_dict()
-
-            torch.save(state_dict, file_path)
+            # Save the full state_dict instead of custom dictionary
+            torch.save(self.params.state_dict(), file_path)
             print(f"Model parameters saved to {file_path}")
         else:
             print("Model parameters are not initialized.")
@@ -186,10 +254,12 @@ class LearnedAttentionProbe(Monitor):
         num_epochs,
         lr=0.01,
         l2_penalty=0.001,
+        label_smoothing=0.02,
         **kwargs,
     ) -> float:
         """Always use super().fit() for consistency"""
-        print(f"[Rank {self.accelerator.process_index}] Starting fit with {self.fit_method}")
+        if self.accelerator.is_main_process:
+            print(f"[Rank {self.accelerator.process_index}] Starting fit with {self.fit_method}")
 
         # Print detailed info about the training data
         if self.accelerator.is_main_process:
@@ -213,6 +283,9 @@ class LearnedAttentionProbe(Monitor):
                 max_iter=kwargs.get("max_iter", 1000),
             )
 
+        if self.early_stopping is not None:
+            kwargs["early_stopping"] = self.early_stopping
+
         return super().fit(
             activation_paths,
             trajectories,
@@ -220,6 +293,7 @@ class LearnedAttentionProbe(Monitor):
             num_epochs,
             lr=lr,
             l2_penalty=l2_penalty,
+            label_smoothing=label_smoothing,
             **kwargs,
         )
 
@@ -288,8 +362,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--on_policy_model_organism", choices=[True, False], type=bool, default=False
     )
+    parser.add_argument("--early_stopping", type=float, help="Early stopping loss", default=None)
     args = parser.parse_args()
-    out_path = f"./{args.train_task}__{args.eval_task}/out.pkl"
+    out_path = args.out_path
 
     model = args.model
     assert args.train_task in tasks, f"Invalid train task: {args.train_task}"
@@ -306,20 +381,21 @@ if __name__ == "__main__":
         use_normalization=args.use_normalization,
         attention_scaling=args.attention_scaling,
         initialization_scale=args.initialization_scale,
+        temperature=2.0,
         on_policy_model_organism=args.on_policy_model_organism,
+        early_stopping=args.early_stopping,
     )
 
-    # Replace train() with learning_rate_sweep()
+    # Use regular learning_rate_sweep for now (TODO: add learning_rate_sweep_with_early_tpr_stopping to base_probe)
     best_lr = attention_probe.learning_rate_sweep(
         args.train_path,
         clear_activation_cache=True,
         num_epochs=args.num_epochs,
         min_lr=args.min_lr,
         max_lr=args.max_lr,
-        num_steps=args.num_lr_steps,  # replace these three with args.lr to call train()
-        # lr=args.lr,
+        num_steps=args.num_lr_steps,
         optimizer_type="AdamW",
-        max_grad_norm=10.0,
+        max_grad_norm=20.0,
         min_grad_norm=1e-4,
     )
 

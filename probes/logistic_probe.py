@@ -100,11 +100,18 @@ class LogisticProbe(Monitor):
         for i, (trajectory, activations) in enumerate(zip(trajectories, trajectory_activations)):
             # Move activations to device
             activations = activations.to(self.device)
-            assert (
-                activations.shape[0] == 1
-            ), f"Activations should be shape (1, num_tokens, hidden_size), but got {activations.shape}"
+            # Remove problematic assertion and add flexible shape validation
+            if activations.dim() == 3 and activations.shape[0] == 1:
+                # Standard case: (1, num_tokens, hidden_size)
+                activations_2d = activations[0, :, :]
+            elif activations.dim() == 2:
+                # Already 2D: (num_tokens, hidden_size)
+                activations_2d = activations
+            else:
+                raise ValueError(f"Unexpected activation shape: {activations.shape}. Expected (1, num_tokens, hidden_size) or (num_tokens, hidden_size)")
+            
             self.params = self.params.to(self.device)
-            logits = self.params(activations[0, :, :])
+            logits = self.params(activations_2d)
             token_heatmap = torch.sigmoid(logits)
 
             match self.token_position_aggregation_strategy:
@@ -242,7 +249,7 @@ if __name__ == "__main__":
     linear_probe = LogisticProbe(
         model_name=model,
         monitor_dir=monitor_dir,
-        inference_batch_size_per_device=1,
+        inference_batch_size_per_device=4,
         dtype=torch.bfloat16,
         layer=args.layer,
         on_policy_model_organism=args.on_policy_model_organism,

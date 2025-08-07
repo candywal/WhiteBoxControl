@@ -87,7 +87,7 @@ Examples:
                        help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=None,
                        help="Learning rate (if None, uses probe-specific defaults)")
-    parser.add_argument("--batch_size", type=int, default=1,
+    parser.add_argument("--batch_size", type=int, default=4,
                        help="Batch size for inference")
     
     # Attention probe specific arguments

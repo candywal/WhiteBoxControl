@@ -106,12 +106,18 @@ class MeanDiffProbe(Monitor):
         for i, (trajectory, activations) in enumerate(zip(trajectories, trajectory_activations)):
             # Move activations to device
             activations = activations.to(self.device)
-            assert (
-                activations.shape[0] == 1
-            ), f"Activations should be shape (1, num_tokens, hidden_size), but got {activations.shape}"
+            # Remove problematic assertion and add flexible shape validation
+            if activations.dim() == 3 and activations.shape[0] == 1:
+                # Standard case: (1, num_tokens, hidden_size)
+                activations_2d = activations[0, :, :]
+            elif activations.dim() == 2:
+                # Already 2D: (num_tokens, hidden_size)
+                activations_2d = activations
+            else:
+                raise ValueError(f"Unexpected activation shape: {activations.shape}. Expected (1, num_tokens, hidden_size) or (num_tokens, hidden_size)")
 
             # Project activations along the direction vector
-            token_projections = torch.matmul(activations[0, :, :], self.params.weight)
+            token_projections = torch.matmul(activations_2d, self.params.weight)
 
             match self.token_position_aggregation_strategy:
                 case "mean":
@@ -153,16 +159,25 @@ class MeanDiffProbe(Monitor):
             # Aggregate activations based on token strategy
             aggregated_activations = []
             for act in class_activations:
-                act = act[0]  # Remove batch dimension
+                # Handle activation shapes flexibly
+                if act.dim() == 3 and act.shape[0] == 1:
+                    # Standard case: (1, num_tokens, hidden_size)
+                    act_2d = act[0]
+                elif act.dim() == 2:
+                    # Already 2D: (num_tokens, hidden_size)
+                    act_2d = act
+                else:
+                    raise ValueError(f"Unexpected activation shape: {act.shape}. Expected (1, num_tokens, hidden_size) or (num_tokens, hidden_size)")
+                    
                 match self.token_position_aggregation_strategy:
                     case "mean":
-                        aggregated_activations.append(act.mean(dim=0))
+                        aggregated_activations.append(act_2d.mean(dim=0))
                     case "soft_max":
                         # Apply softmax across tokens for each feature
-                        weights = torch.softmax(act.norm(dim=1, keepdim=True) / 0.1, dim=0)
-                        aggregated_activations.append((act * weights).sum(dim=0))
+                        weights = torch.softmax(act_2d.norm(dim=1, keepdim=True) / 0.1, dim=0)
+                        aggregated_activations.append((act_2d * weights).sum(dim=0))
                     case "last_only":
-                        aggregated_activations.append(act[-1])
+                        aggregated_activations.append(act_2d[-1])
 
             # Compute mean activation for this class
             class_means[label] = torch.stack(aggregated_activations).mean(dim=0)
@@ -285,7 +300,7 @@ if __name__ == "__main__":
     mean_diff_probe = MeanDiffProbe(
         model_name=model,
         monitor_dir=monitor_dir,
-        inference_batch_size_per_device=1,
+        inference_batch_size_per_device=4,
         dtype=torch.bfloat16,
         layer=args.layer,
         on_policy_model_organism=args.on_policy_model_organism,

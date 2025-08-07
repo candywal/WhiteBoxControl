@@ -370,7 +370,7 @@ class Monitor:
             if self.on_policy_model_organism:
                 # HERE
                 # model_path = "/mnt/nvme5/anshul/models/vio_ft"
-                model_path = "/mnt/nvme5/anshul/models/sabotage_ft"
+                # model_path = "/mnt/nvme5/anshul/models/sabotage_ft"
                 # model_path = "/mnt/nvme5/anshul/models/deception_ft"
                 model_path = "/mnt/nvme3/aghyad/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-32B-Instruct/snapshots/381fc969f78efac66bc87ff7ddeadb7e73c218a7"
             else:
